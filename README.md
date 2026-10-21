@@ -1,7 +1,6 @@
 # 🛡️ DIGITAL FORENSICS & INCIDENT RESPONSE (DFIR) REPORT
 
 ![Category](https://img.shields.io/badge/Category-DFIR%20%2F%20SOC-blue)
-![Severity](https://img.shields.io/badge/Severity-Critical-red)
 ![Status](https://img.shields.io/badge/Status-Resolved-success)
 
 **Incident Title:** Unauthorized SMB Access, Web Shell Deployment, and AgentTesla RAT Implant on Public-Facing IIS Server  
