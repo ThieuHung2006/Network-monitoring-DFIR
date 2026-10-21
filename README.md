@@ -128,7 +128,10 @@ Analyzing the memory image (`memdump.mem`) with Volatility 3 exposed the executi
 *   **`updatenow.exe` (PID `900`):** At `06:08:23 UTC`, `w3wp.exe` spawned an unfamiliar child executable named `updatenow.exe`. An IIS worker process should never spawn standalone third-party binaries.
 
 ![Volatility Process List](Volatility_Process_Tree_w3wp_updatenow.png)
-*Figure 4.1: Volatility 3 windows.pslist output showing w3wp.exe spawning updatenow.exe.*
+*   **`updatenow.exe` (PID `900`):** At `06:08:23 UTC`—approximately 20 minutes after the `shell.aspx` payload was uploaded (`05:48:53 UTC`) and triggered—`w3wp.exe` spawned an unfamiliar child executable named `updatenow.exe`. An IIS worker process should never spawn standalone third-party binaries, confirming this executable was deliberately launched via the active web shell connection.
+
+![Volatility Process List](Volatility_Process_Tree_w3wp_updatenow.png)
+*Figure 4.1: Volatility 3 windows.pslist output showing w3wp.exe spawning updatenow.exe at 06:08:23 UTC, correlating with the earlier web shell upload.*
 
 #### Step 4.2: Identifying the Persistence Mechanism
 Inspecting the command-line arguments of the anomalous child process revealed its exact on-disk location:
@@ -136,6 +139,7 @@ Inspecting the command-line arguments of the anomalous child process revealed it
 By dropping `updatenow.exe` into the global `ProgramData` Startup directory, the attacker ensured the payload would automatically execute whenever any user logs into the server.
 
 ![Volatility Command Line Persistence Path](Volatility_Persistence_Startup_Path_PID900.png)
+*Figure 4.2: Volatility 3 output confirming updatenow.exe was planted inside the Windows Startup folder.*
 *Figure 4.2: Volatility 3 output confirming updatenow.exe was planted inside the Windows Startup folder.*
 
 ---
