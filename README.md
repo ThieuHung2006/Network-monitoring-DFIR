@@ -1,4 +1,4 @@
-# 🛡️ DFIR Report: Lockdown (CyberDefenders)
+# 🛡️ DFIR Report: Lockdown 
 
 ![Category](https://img.shields.io/badge/Category-DFIR%20%2F%20SOC-blue)
 ![Difficulty](https://img.shields.io/badge/Difficulty-Medium-yellow)
