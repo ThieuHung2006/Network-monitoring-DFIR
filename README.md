@@ -54,10 +54,15 @@ Initial triage of the packet capture began by reviewing IPv4 conversation statis
 *Figure 1.1: Wireshark IPv4 Conversations highlighting a 6,007-packet spike between 10.0.2.4 and 10.0.2.15.*
 
 #### Step 1.2: Analyzing the TCP SYN Port Scan
-Isolating traffic from `10.0.2.4` revealed a classic half-open TCP SYN scan (`nmap -sS`). The source port `55475` rapidly dispatched sequential TCP packets with only the `SYN` flag set across hundreds of destination ports on `10.0.2.15`. Applying the display filter `ip.addr==10.0.2.4 && tcp.ack==0 && tcp.flags.syn==1 && tcp.flags.ack==0` confirmed a total of **1,076 distinct SYN probe packets** originating from the attacker.
+Isolating traffic from `10.0.2.4` revealed a classic half-open TCP SYN scan (`nmap -sS`). The source port `55475` rapidly dispatched sequential TCP packets with only the `SYN` flag set across hundreds of destination ports on `10.0.2.15`. Closed ports immediately responded with `[RST, ACK]`, while open ports responded with `[SYN, ACK]`.
 
-![TCP SYN Port Scan Traffic](PCAP_Filter_TCP_SYN_Scan_Probes.png)
-*Figure 1.2: Filtering purely for initial SYN requests confirms 1,076 port scan probes sent by 10.0.2.4.*
+![TCP SYN Port Scan Traffic](PCAP_TCP_SYN_Port_Scan_Traffic.png)
+*Figure 1.2: Raw packet view showing rapid SYN probes from 10.0.2.4 and corresponding RST, ACK rejections from closed ports.*
+
+Applying the display filter `ip.addr==10.0.2.4 && tcp.ack==0 && tcp.flags.syn==1 && tcp.flags.ack==0` confirmed a total of **1,076 distinct SYN probe packets** originating from the attacker.
+
+![TCP SYN Port Scan Traffic Filtered](PCAP_Filter_TCP_SYN_Scan_Probes.png)
+*Figure 1.3: Filtering purely for initial SYN requests confirms 1,076 port scan probes sent by 10.0.2.4.*
 
 #### Step 1.3: Enumerating Open Attack Surfaces
 Filtering for `[SYN, ACK]` responses sent from the server confirmed exactly four open TCP ports on `10.0.2.15`:
@@ -67,14 +72,14 @@ Filtering for `[SYN, ACK]` responses sent from the server confirmed exactly four
 *   **Port 445:** Microsoft-DS / SMB2 File Sharing
 
 ![Identified Open Ports Summary](PCAP_Identified_Open_Ports_Summary.png)
-*Figure 1.3: Wireshark TCP Conversations filtered by SYN-ACK responses, exposing open ports 80, 135, 139, and 445.*
+*Figure 1.4: Wireshark TCP Conversations filtered by SYN-ACK responses, exposing open ports 80, 135, 139, and 445.*
 
 #### Step 1.4: Application-Layer HTTP Enumeration
 Following port discovery, the attacker executed automated service and script enumeration against TCP port `80`. Inspecting the HTTP requests revealed the explicit tool signature within the header:
 `User-Agent: Mozilla/5.0 (compatible; Nmap Scripting Engine; https://nmap.org/book/nse.html)`.
 
 ![HTTP Nmap NSE Enumeration](PCAP_HTTP_Nmap_NSE_Enumeration.png)
-*Figure 1.4: HTTP packet inspection exposing the Nmap Scripting Engine (NSE) User-Agent header.*
+*Figure 1.5: HTTP packet inspection exposing the Nmap Scripting Engine (NSE) User-Agent header.*
 
 ---
 
@@ -86,6 +91,7 @@ Finding no immediate exploit via standard HTTP probing, the attacker pivoted to 
 
 ![SMB Authentication and Tree Connect](PCAP_SMB_Auth_TreeConnect_Enumeration.png)
 *Figure 2.1: SMB2 traffic showing NTLMSSP authentication as WORKGROUP\root, followed by a Tree Connect and Disconnect to IPC$, and a subsequent connection to Documents.*
+
 #### Step 2.2: Unauthorized Exfiltration of `information.txt`
 Directory enumeration inside `\\10.0.2.15\Documents` exposed a text file named `information.txt`. The attacker issued an SMB2 `Read Request` and successfully exfiltrated the 150-byte payload. 
 
@@ -112,7 +118,7 @@ Capitalizing on the write permissions within `\\10.0.2.15\Documents`, the attack
 *Figure 3.1: SMB2 Create and Write requests demonstrating the upload of shell.aspx at 05:48:53 UTC.*
 
 #### Step 3.2: Triggering RCE and Catching the Reverse Shell
-With `shell.aspx` planted inside the IIS virtual directory, the attacker sent an HTTP request: `GET /Documents/shell.aspx HTTP/1.1`. The IIS server compiled the script, returned `HTTP/1.1 200 OK`, and immediately initiated an outbound TCP connection back to the attacker (`10.0.2.4`) on listening port **`4443`**.
+Applying the aforementioned filter, we observed that the attacker sent an HTTP request: `GET /Documents/shell.aspx HTTP/1.1`. The IIS server compiled the script, returned `HTTP/1.1 200 OK`, and immediately initiated an outbound TCP connection back to the attacker (`10.0.2.4`) on listening port **`4443`**.
 
 ![HTTP Trigger and Reverse Shell on Port 4443](PCAP_HTTP_Trigger_Reverse_Shell_Port4443.png)
 *Figure 3.2: HTTP GET request triggering the shell followed by a TCP reverse shell callback to port 4443.*
@@ -122,25 +128,27 @@ With `shell.aspx` planted inside the IIS virtual directory, the attacker sent an
 ### Phase 4: Memory Forensics & Host Persistence Analysis
 **MITRE ATT&CK:** *Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder (T1547.001)*
 
-#### Step 4.1: Process Tree Correlation & Anomaly Detection
+#### Step 4.1: Extracting Kernel Metadata & System Context
+To investigate host-level activities and post-exploitation artifacts, the memory image (`memdump.mem`) was analyzed using **Volatility 3**. Running the `windows.info` plugin established the operating system baseline, confirming a 64-bit Windows Server architecture with a Kernel Base Address of `0xf80079213000`.
+
+![Volatility Kernel Base Info](Volatility_Kernel_Base_System_Info.png)
+*Figure 4.1: Volatility 3 windows.info output displaying the Kernel Base address and OS details.*
+
+#### Step 4.2: Process Tree Correlation & Anomaly Detection
 Analyzing the memory image (`memdump.mem`) with Volatility 3 exposed the execution chain:
 *   **`w3wp.exe` (PID `4332`):** The legitimate IIS Worker Process. Because `shell.aspx` ran inside the IIS application pool, `w3wp.exe` handled the outbound reverse shell.
-*   **`updatenow.exe` (PID `900`):** At `06:08:23 UTC`, `w3wp.exe` spawned an unfamiliar child executable named `updatenow.exe`. An IIS worker process should never spawn standalone third-party binaries.
-
-![Volatility Process List](Volatility_Process_Tree_w3wp_updatenow.png)
 *   **`updatenow.exe` (PID `900`):** At `06:08:23 UTC`—approximately 20 minutes after the `shell.aspx` payload was uploaded (`05:48:53 UTC`) and triggered—`w3wp.exe` spawned an unfamiliar child executable named `updatenow.exe`. An IIS worker process should never spawn standalone third-party binaries, confirming this executable was deliberately launched via the active web shell connection.
 
 ![Volatility Process List](Volatility_Process_Tree_w3wp_updatenow.png)
-*Figure 4.1: Volatility 3 windows.pslist output showing w3wp.exe spawning updatenow.exe at 06:08:23 UTC, correlating with the earlier web shell upload.*
+*Figure 4.2: Volatility 3 windows.pslist output showing w3wp.exe spawning updatenow.exe at 06:08:23 UTC, correlating with the earlier web shell upload.*
 
-#### Step 4.2: Identifying the Persistence Mechanism
+#### Step 4.3: Identifying the Persistence Mechanism
 Inspecting the command-line arguments of the anomalous child process revealed its exact on-disk location:
 `"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\updatenow.exe"`
 By dropping `updatenow.exe` into the global `ProgramData` Startup directory, the attacker ensured the payload would automatically execute whenever any user logs into the server.
 
 ![Volatility Command Line Persistence Path](Volatility_Persistence_Startup_Path_PID900.png)
-*Figure 4.2: Volatility 3 output confirming updatenow.exe was planted inside the Windows Startup folder.*
-*Figure 4.2: Volatility 3 output confirming updatenow.exe was planted inside the Windows Startup folder.*
+*Figure 4.3: Volatility 3 output confirming updatenow.exe was planted inside the Windows Startup folder.*
 
 ---
 
@@ -159,14 +167,22 @@ The embedded XML Application Manifest within the `.rsrc` section is explicitly c
 ![Malware XML Manifest Analysis](Malware_Manifest_UAC_Bypass_Analysis.png)
 *Figure 5.2: Extracted XML Application Manifest highlighting the asInvoker execution level.*
 
-#### Step 5.3: Malware Family Attribution & C2
-Submitting the file hash to VirusTotal yielded a **57/71** malicious detection rate. Threat intelligence consensus attributes the sample to the **AgentTesla** malware family. Dynamic sandbox telemetry revealed that the AgentTesla implant beacons out to the malicious external Command and Control (C2) server **`cp8nl.hyperhost.ua`**.
+#### Step 5.3: PE Metadata & Malware Family Attribution
+Submitting the file hash to VirusTotal corroborated the static findings. The **Details** tab confirmed a 32-bit Windows executable packed with UPX 3.91 and wrapped with an AutoIt layer. 
+
+![VirusTotal PE Metadata](VT_Static_Analysis_PE_Metadata.png)
+*Figure 5.3: VirusTotal Details tab confirming UPX 3.91 packing, AutoIt library usage, and compilation timestamps.*
+
+On the **Detection** tab, the sample yielded a **57/71** malicious detection rate. Threat intelligence consensus attributes the sample to the **AgentTesla** malware family, a well-known info-stealer. 
 
 ![VirusTotal Malware Family Detection](VT_Detection_Malware_Family_AgentTesla.png)
-*Figure 5.3: VirusTotal Detection identifying the AgentTesla malware family.*
+*Figure 5.4: VirusTotal Detection identifying the AgentTesla malware family.*
+
+#### Step 5.4: Command & Control (C2) Infrastructure Identification
+Dynamic sandbox telemetry revealed that the AgentTesla implant beacons out to the malicious external Command and Control (C2) server **`cp8nl.hyperhost.ua`**.
 
 ![VirusTotal Contacted C2 Domains](VT_Network_C2_Contacted_Domains.png)
-*Figure 5.4: VirusTotal Relations tab exposing the outbound C2 domain cp8nl.hyperhost.ua.*
+*Figure 5.5: VirusTotal Relations tab exposing the outbound C2 domain cp8nl.hyperhost.ua.*
 
 ---
 
@@ -176,9 +192,9 @@ Submitting the file hash to VirusTotal yielded a **57/71** malicious detection r
 | :--- | :--- | :--- | :--- |
 | **PCAP `78.08s`** | Reconnaissance | `10.0.2.4` | Attacker launches a 1,076-packet TCP SYN port scan against `10.0.2.15`, discovering open ports `80, 135, 139, 445`. |
 | **PCAP `94.42s`** | Enumeration | `10.0.2.4` | Attacker runs Nmap Scripting Engine (NSE) HTTP probes against IIS on TCP port `80`. |
-| **PCAP `263.29s`** | Initial Access | `10.0.2.4` | Attacker authenticates to SMB2 as `WORKGROUP\root` and connects to `\\10.0.2.15\Documents`. |
+| **PCAP `263.29s`** | Initial Access | `10.0.2.4` | Attacker authenticates to SMB2 as `WORKGROUP\root`, probes `IPC$`, and connects to `\\10.0.2.15\Documents`. |
 | **PCAP `273.86s`** | Collection | `10.0.2.4` | Attacker reads `information.txt` over SMB2, learning that the SMB share is linked to the IIS web server. |
-| **PCAP `342.48s`** | Weaponization | `10.0.2.4` | Attacker uploads `shell.aspx` into `\\10.0.2.15\Documents` via SMB2. |
+| **`05:48:53 UTC`** | Weaponization | `10.0.2.4` | Attacker uploads `shell.aspx` into `\\10.0.2.15\Documents` via SMB2. |
 | **PCAP `389.51s`** | Execution | `10.0.2.4` | Attacker sends `GET /Documents/shell.aspx HTTP/1.1` to trigger the web shell. |
 | **PCAP `401.49s`** | C2 | `w3wp.exe` | IIS worker process (`PID 4332`) establishes a reverse shell back to `10.0.2.4` on TCP port `4443`. |
 | **`06:08:23 UTC`** | Persistence | `w3wp.exe` | Web shell spawns `updatenow.exe` (`PID 900`) from the Startup folder (AgentTesla RAT). |
