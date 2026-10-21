@@ -106,10 +106,10 @@ This intelligence confirmed that files written to the `Documents` SMB share were
 **MITRE ATT&CK:** *Server Software Component: Web Shell (T1505.003), Command and Scripting Interpreter (T1059), Non-Standard Port (T1571)*
 
 #### Step 3.1: Uploading the Malicious ASPX Web Shell
-Capitalizing on the write permissions within `\\10.0.2.15\Documents`, the attacker issued an SMB2 `Create Request` to instantiate a new file named **`shell.aspx`**. The attacker then transmitted an SMB2 `Write Request` containing the malicious ASP.NET code.
+Capitalizing on the write permissions within `\\10.0.2.15\Documents`, the attacker issued an SMB2 `Create Request` to instantiate a new file named **`shell.aspx`**. At exactly `05:48:53 UTC` (frame `#3505`), the attacker transmitted an SMB2 `Write Request` containing the malicious ASP.NET code. To verify if this uploaded payload successfully executed and established a reverse shell, we will filter subsequent network traffic for packets occurring immediately after this upload phase (e.g., using the filter `frame.number > 3505`).
 
 ![SMB Webshell Upload](PCAP_SMB_Webshell_Upload_shell_aspx.png)
-*Figure 3.1: SMB2 Create and Write requests demonstrating the upload of shell.aspx.*
+*Figure 3.1: SMB2 Create and Write requests demonstrating the upload of shell.aspx at 05:48:53 UTC.*
 
 #### Step 3.2: Triggering RCE and Catching the Reverse Shell
 With `shell.aspx` planted inside the IIS virtual directory, the attacker sent an HTTP request: `GET /Documents/shell.aspx HTTP/1.1`. The IIS server compiled the script, returned `HTTP/1.1 200 OK`, and immediately initiated an outbound TCP connection back to the attacker (`10.0.2.4`) on listening port **`4443`**.
