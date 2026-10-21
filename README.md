@@ -1,13 +1,9 @@
 # 🛡️ DFIR Report: Lockdown 
 
 ![Category](https://img.shields.io/badge/Category-DFIR%20%2F%20SOC-blue)
-![Difficulty](https://img.shields.io/badge/Difficulty-Medium-yellow)
 ![Tools](https://img.shields.io/badge/Tools-Wireshark%20%7C%20Volatility%203%20%7C%20VirusTotal-success)
 
-Báo cáo Điều tra Pháp y Kỹ thuật số & Ứng cứu Sự cố (DFIR) chi tiết cho bài lab **Lockdown** trên nền tảng CyberDefenders. Quá trình điều tra truy vết toàn bộ vòng đời tấn công từ bước rà quét mạng, khai thác giao thức SMB, cài cắm Web Shell cho đến phân tích pháp y bộ nhớ và dịch ngược mã độc.
-
-**Người thực hiện:** Thiều Đình Hưng (B24DCCN267)  
-**Định hướng:** SOC Analyst / Blue Team Security  
+Báo cáo Điều tra Pháp y Kỹ thuật số & Ứng cứu Sự cố (DFIR) chi tiết cho bài lab **Lockdown** trên nền tảng CyberDefenders. Quá trình điều tra truy vết toàn bộ vòng đời tấn công từ bước rà quét mạng, khai thác giao thức SMB, cài cắm Web Shell cho đến phân tích pháp y bộ nhớ và dịch ngược mã độc
 
 ---
 
