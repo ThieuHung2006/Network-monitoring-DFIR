@@ -82,11 +82,10 @@ Following port discovery, the attacker executed automated service and script enu
 **MITRE ATT&CK:** *Valid Accounts (T1078), SMB/Windows Admin Shares (T1021.002), Data from Network Shared Drive (T1039)*
 
 #### Step 2.1: Privileged SMB Authentication & Share Discovery
-Finding no immediate exploit via standard HTTP probing, the attacker pivoted to TCP port `445` (SMB2). The attacker successfully authenticated via NTLMSSP using the account **`WORKGROUP\root`** from host `KALI`. They then issued a `Tree Connect Request` to the file share **`\\10.0.2.15\Documents`** and executed wildcard searches to list its contents.
+Finding no immediate exploit via standard HTTP probing, the attacker pivoted to TCP port `445` (SMB2). The attacker successfully authenticated via NTLMSSP using the account **`WORKGROUP\root`** from host `KALI`. They initially issued a `Tree Connect Request` to probe the hidden administrative share **`\\10.0.2.15\IPC$`**. Shortly after, they disconnected from `IPC$` and established a new connection to the file share **`\\10.0.2.15\Documents`**, where they executed wildcard searches to list its contents.
 
 ![SMB Authentication and Tree Connect](PCAP_SMB_Auth_TreeConnect_Enumeration.png)
-*Figure 2.1: SMB2 traffic showing NTLMSSP authentication as WORKGROUP\root and Tree Connect requests.*
-
+*Figure 2.1: SMB2 traffic showing NTLMSSP authentication as WORKGROUP\root, followed by a Tree Connect and Disconnect to IPC$, and a subsequent connection to Documents.*
 #### Step 2.2: Unauthorized Exfiltration of `information.txt`
 Directory enumeration inside `\\10.0.2.15\Documents` exposed a text file named `information.txt`. The attacker issued an SMB2 `Read Request` and successfully exfiltrated the 150-byte payload. 
 
