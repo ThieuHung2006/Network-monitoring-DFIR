@@ -1,238 +1,431 @@
-# 🛡️ DIGITAL FORENSICS & INCIDENT RESPONSE (DFIR) REPORT
+# DFIR Lab: Web Shell and RAT Compromise of an IIS Server via Writable SMB Share
 
-![Category](https://img.shields.io/badge/Category-DFIR%20%2F%20SOC-blue)
-![Status](https://img.shields.io/badge/Status-Resolved-success)
+![Type](https://img.shields.io/badge/Type-DFIR%20Lab-blue)
+![Focus](https://img.shields.io/badge/Focus-PCAP%20%7C%20Memory%20%7C%20Malware%20Triage-informational)
+![Framework](https://img.shields.io/badge/Framework-MITRE%20ATT%26CK-red)
 
-**Incident Title:** Unauthorized SMB Access, Web Shell Deployment, and AgentTesla RAT Implant on Public-Facing IIS Server  
-**Case Reference:** DFIR-2026-LOCKDOWN  
-**Target Asset:** TechNova Systems – Cloud IIS Web Server (`10.0.2.15`)  
-**Severity Level:** Critical  
-**Prepared By:** Security Operations & DFIR Team  
+| | |
+| :--- | :--- |
+| **Project type** | Independent lab: simulated incident reconstructed from a public case and investigated end to end |
+| **Based on** | ⟨Name / link of the original case, e.g. CyberDefenders challenge or write-up⟩ |
+| **Analyst** | ⟨Your name⟩ |
+| **Lab environment** | ⟨e.g. VirtualBox NAT network: Kali Linux attacker (`10.0.2.4`), Windows Server + IIS victim (`10.0.2.15`)⟩ |
+| **Tools** | Wireshark, Volatility 3, `strings`, VirusTotal, Sigma |
+| **Evidence** | `capture.pcapng`, `memdump.mem`, `updatenow.exe` |
+
+> **Disclaimer:** All hosts, accounts and IP addresses in this report belong to an isolated lab environment. No real organization or production system was involved.
 
 ---
 
-## 📑 Table of Contents
+## TL;DR
+
+- **Attack chain:** Nmap SYN scan, then SMB login as `WORKGROUP\root`, then read of `information.txt`, then upload of `shell.aspx` through a writable SMB share that is also an IIS web directory, then reverse shell on TCP/4443, then `updatenow.exe` placed in the All-Users Startup folder.
+- **Root cause:** A writable SMB share mapped directly into an IIS directory with script execution enabled.
+- **Malware:** UPX-packed, AutoIt-wrapped PE32 flagged as AgentTesla by AV vendors (57/71 on VirusTotal).
+- **Best detection opportunity:** `w3wp.exe` spawning an unexpected child process; SMB creation of `.aspx` files in a web-served directory.
+- **Skills demonstrated:** network forensics, memory forensics, static malware triage, MITRE ATT&CK mapping, detection engineering, report writing.
+
+---
+
+## Table of Contents
 1. [Executive Summary](#1-executive-summary)
-2. [Scope & Forensic Artifacts](#2-scope--forensic-artifacts)
-3. [Technical Investigation & Attack Reconstruction](#3-technical-investigation--attack-reconstruction)
-4. [Reconstruction Timeline](#4-reconstruction-timeline)
-5. [Consolidated Indicators of Compromise (IoCs)](#5-consolidated-indicators-of-compromise-iocs)
-6. [Remediation & Hardening Recommendations](#6-remediation--hardening-recommendations)
+2. [Scope, Evidence and Methodology](#2-scope-evidence-and-methodology)
+3. [Investigation Findings](#3-investigation-findings)
+4. [Timeline](#4-timeline)
+5. [MITRE ATT&CK Mapping](#5-mitre-attck-mapping)
+6. [Indicators of Compromise](#6-indicators-of-compromise)
+7. [Detection Engineering](#7-detection-engineering)
+8. [Recommendations](#8-recommendations)
+9. [Limitations and Open Questions](#9-limitations-and-open-questions)
+10. [Lessons Learned](#10-lessons-learned)
 
 ---
 
 ## 1. Executive Summary
 
-TechNova Systems' Security Operations Center (SOC) detected anomalous outbound network connections originating from a public-facing Microsoft IIS server (`10.0.2.15`). A comprehensive forensic investigation was initiated across three primary evidence sources: a network packet capture (`capture.pcapng`), a full physical memory image (`memdump.mem`), and a recovered malicious binary (`updatenow.exe`).
+This project reconstructs and investigates a simulated compromise of a Windows IIS web server (`10.0.2.15`) using three evidence sources: a network capture (`capture.pcapng`), a physical memory image (`memdump.mem`) and a recovered binary (`updatenow.exe`).
 
-Forensic reconstruction confirmed a full system compromise initiated from the IP address `10.0.2.4`. The threat actor conducted aggressive TCP SYN port scanning and Nmap HTTP enumeration before authenticating to the server's SMB service using privileged credentials (`WORKGROUP\root`). After enumerating network shares and exfiltrating a sensitive internal note (`information.txt`) from the `\\10.0.2.15\Documents` share, the attacker exploited a critical architectural misconfiguration—where the writable SMB share overlapped with an IIS web-accessible virtual directory—to upload an ASP.NET web shell (`shell.aspx`).
+The attacker (`10.0.2.4`) performed a TCP SYN scan and Nmap HTTP script enumeration, then authenticated to SMB as `WORKGROUP\root`. After listing shares and reading an internal note (`information.txt`) from `\\10.0.2.15\Documents`, the attacker used write access to that share to upload an ASP.NET web shell (`shell.aspx`). The note and the subsequent HTTP request show that the share maps to a web-accessible IIS path.
 
-Executing the web shell via an HTTP GET request established an interactive reverse shell over TCP port `4443` under the context of the IIS worker process (`w3wp.exe`, PID `4332`). To maintain long-term access, the attacker deployed a UPX-packed secondary payload (`updatenow.exe`, PID `900`) into the Windows All-Users Startup folder. Static and threat intelligence analysis identified the implant as **AgentTesla**, a commodity info-stealer and Remote Access Trojan (RAT) configured to beacon to the Command and Control (C2) domain `cp8nl.hyperhost.ua`.
+Requesting the web shell over HTTP was followed by an outbound TCP connection from the server to the attacker on port `4443`. Memory analysis shows the IIS worker process (`w3wp.exe`, PID 4332) as the parent of `updatenow.exe` (PID 900), which runs from the All-Users Startup folder. Static analysis and VirusTotal results indicate the binary is a UPX-packed AutoIt sample attributed by vendors to **AgentTesla**.
 
----
-
-## 2. Scope & Forensic Artifacts
-
-### Network Environment Overview
-The network topology involved in this incident consists of the external attacker node, the public-facing IIS Web Server, and the outbound Command and Control (C2) infrastructure. 
-
-![Network Topology Overview](/images/Network_Topology_Overview.png)
-*Figure 2.1: Network topology diagram illustrating the attacker origin (10.0.2.4), the compromised IIS server (10.0.2.15), and the external C2 domain.*
-
-### Evidentiary Artifacts
-The investigation analyzed the following evidentiary artifacts collected during incident triage:
-
-*   **Network Capture (`capture.pcapng`):** Full packet capture recording the initial reconnaissance, lateral share enumeration, payload staging, and reverse shell traffic.
-*   **Memory Image (`memdump.mem`):** Raw physical RAM snapshot acquired via FTK Imager (`PID 3628`) at `2024-09-10 06:09:42 UTC`, preserving volatile kernel structures and active processes.
-*   **Malware Sample (`updatenow.exe`):** Suspicious Portable Executable (PE32) recovered from the server's global Startup directory (`SHA-256: c25a6673a24d169de1bb399d226c12cdc666e0fa534149fc9fa7896ee61d406f`).
+**Impact (lab scenario):** remote code execution as the IIS worker identity, disclosure of one internal file, and an information-stealing implant configured for persistence.
 
 ---
 
-## 3. Technical Investigation & Attack Reconstruction
+## 2. Scope, Evidence and Methodology
 
-### Phase 1: Network Reconnaissance & Service Enumeration
-**MITRE ATT&CK:** *Network Service Discovery (T1046), Active Scanning (T1595)*
+### Network Environment
 
-#### Step 1.1: Identifying the Attacker Origin via Traffic Volume Analysis
-Initial triage of the packet capture began by reviewing IPv4 conversation statistics to identify abnormal communication patterns. A massive communication spike was recorded between internal hosts `10.0.2.4` and `10.0.2.15`, comprising **6,007 packets** and **4 MB** of data transfer over a 1,434-second window.
+![Network Topology Overview](./images/Network_Topology_Overview.png)
+*Figure 1: Lab topology: attacker (10.0.2.4), IIS server (10.0.2.15) and external domain contacted by the malware.*
 
-![IPv4 Conversations Traffic Spike](/images/PCAP_IPv4_Conversations_Traffic_Spike.png)
-*Figure 1.1: Wireshark IPv4 Conversations highlighting a 6,007-packet spike between 10.0.2.4 and 10.0.2.15.*
+### Evidence Artifacts
 
-#### Step 1.2: Analyzing the TCP SYN Port Scan
-Isolating traffic from `10.0.2.4` revealed a classic half-open TCP SYN scan (`nmap -sS`). The source port `55475` rapidly dispatched sequential TCP packets with only the `SYN` flag set across hundreds of destination ports on `10.0.2.15`. Closed ports immediately responded with `[RST, ACK]`, while open ports responded with `[SYN, ACK]`.
+| Artifact | Description | Integrity |
+| :--- | :--- | :--- |
+| `capture.pcapng` | Packet capture covering scan, SMB activity, web shell trigger and reverse shell | SHA-256: ⟨`sha256sum capture.pcapng`⟩ |
+| `memdump.mem` | Physical memory image acquired with FTK Imager (PID 3628) at `2024-09-10 06:09:42 UTC` | SHA-256: ⟨`sha256sum memdump.mem`⟩ |
+| `updatenow.exe` | PE32 recovered from the All-Users Startup folder | SHA-256: `c25a6673a24d169de1bb399d226c12cdc666e0fa534149fc9fa7896ee61d406f` |
 
-![TCP SYN Port Scan Traffic](/images/PCAP_TCP_SYN_Port_Scan_Traffic.png)
-*Figure 1.2: Raw packet view showing rapid SYN probes from 10.0.2.4 and corresponding RST, ACK rejections from closed ports.*
-
-Applying the display filter `ip.addr==10.0.2.4 && tcp.ack==0 && tcp.flags.syn==1 && tcp.flags.ack==0` confirmed a total of **1,076 distinct SYN probe packets** originating from the attacker.
-
-![TCP SYN Port Scan Traffic Filtered](/images/PCAP_Filter_TCP_SYN_Scan_Probes.png)
-*Figure 1.3: Filtering purely for initial SYN requests confirms 1,076 port scan probes sent by 10.0.2.4.*
-
-#### Step 1.3: Enumerating Open Attack Surfaces
-Filtering for `[SYN, ACK]` responses sent from the server confirmed exactly four open TCP ports on `10.0.2.15`:
-*   **Port 80:** HTTP (Microsoft IIS Web Server)
-*   **Port 135:** Microsoft EPMAP / DCE-RPC
-*   **Port 139:** NetBIOS Session Service
-*   **Port 445:** Microsoft-DS / SMB2 File Sharing
-
-![Identified Open Ports Summary](/images/PCAP_Identified_Open_Ports_Summary.png)
-*Figure 1.4: Wireshark TCP Conversations filtered by SYN-ACK responses, exposing open ports 80, 135, 139, and 445.*
-
-#### Step 1.4: Application-Layer HTTP Enumeration
-Following port discovery, the attacker executed automated service and script enumeration against TCP port `80`. Inspecting the HTTP requests revealed the explicit tool signature within the header:
-`User-Agent: Mozilla/5.0 (compatible; Nmap Scripting Engine; https://nmap.org/book/nse.html)`.
-
-![HTTP Nmap NSE Enumeration](/images/PCAP_HTTP_Nmap_NSE_Enumeration.png)
-*Figure 1.5: HTTP packet inspection exposing the Nmap Scripting Engine (NSE) User-Agent header.*
+### Methodology
+1. **Network triage:** Wireshark conversation statistics, then scan, SMB and HTTP analysis using display filters.
+2. **Memory analysis:** Volatility 3 (`windows.info`, `windows.pslist`) for process lineage and command lines.
+3. **Malware triage:** `strings`, manifest review and VirusTotal for packer, family and network indicators. No dynamic execution was performed locally.
+4. **Correlation:** events from all three sources were aligned on a single UTC timeline (see [Timeline](#4-timeline)).
 
 ---
 
-### Phase 2: SMB Exploitation & Internal Information Disclosure
-**MITRE ATT&CK:** *Valid Accounts (T1078), SMB/Windows Admin Shares (T1021.002), Data from Network Shared Drive (T1039)*
+## 3. Investigation Findings
 
-#### Step 2.1: Privileged SMB Authentication & Share Discovery
-Finding no immediate exploit via standard HTTP probing, the attacker pivoted to TCP port `445` (SMB2). The attacker successfully authenticated via NTLMSSP using the account **`WORKGROUP\root`** from host `KALI`. They initially issued a `Tree Connect Request` to probe the hidden administrative share **`\\10.0.2.15\IPC$`**. Shortly after, they disconnected from `IPC$` and established a new connection to the file share **`\\10.0.2.15\Documents`**, where they executed wildcard searches to list its contents.
+### Stage A: Reconnaissance and Service Enumeration
+**ATT&CK:** T1595 Active Scanning, T1046 Network Service Discovery
 
-![SMB Authentication and Tree Connect](/images/PCAP_SMB_Auth_TreeConnect_Enumeration.png)
-*Figure 2.1: SMB2 traffic showing NTLMSSP authentication as WORKGROUP\root, followed by a Tree Connect and Disconnect to IPC$, and a subsequent connection to Documents.*
+**A.1 Identifying the attacker host.** IPv4 conversation statistics show an outlier between `10.0.2.4` and `10.0.2.15`: **6,007 packets / 4 MB over 1,434 s**.
 
-#### Step 2.2: Unauthorized Exfiltration of `information.txt`
-Directory enumeration inside `\\10.0.2.15\Documents` exposed a text file named `information.txt`. The attacker issued an SMB2 `Read Request` and successfully exfiltrated the 150-byte payload. 
+![IPv4 Conversations Traffic Spike](./images/PCAP_IPv4_Conversations_Traffic_Spike.png)
+*Figure 2: IPv4 conversations showing the traffic spike between the two hosts.*
 
-![SMB Read File information.txt](/images/PCAP_SMB_Read_File_information_txt.png)
-*Figure 2.2: SMB2 packet sequence capturing the attacker reading 150 bytes from information.txt.*
+**A.2 TCP SYN scan.** Traffic from `10.0.2.4` (source port `55475`) shows rapid SYN-only packets to many destination ports. Closed ports answered `[RST, ACK]`; open ports answered `[SYN, ACK]`. This is consistent with a half-open scan such as `nmap -sS`.
 
-Decoding the payload revealed a critical developer note:
+![TCP SYN Port Scan Traffic](./images/PCAP_TCP_SYN_Port_Scan_Traffic.png)
+*Figure 3: SYN probes and RST/ACK responses.*
+
+The filter `ip.addr==10.0.2.4 && tcp.flags.syn==1 && tcp.flags.ack==0` returned **1,076 SYN probes**.
+
+![TCP SYN Port Scan Traffic Filtered](./images/PCAP_Filter_TCP_SYN_Scan_Probes.png)
+*Figure 4: Filtered view confirming 1,076 probes.*
+
+**A.3 Exposed services.** Filtering for `[SYN, ACK]` from the server shows four open ports:
+
+| Port | Service |
+| :--- | :--- |
+| 80 | HTTP (Microsoft IIS) |
+| 135 | MS-RPC endpoint mapper |
+| 139 | NetBIOS session service |
+| 445 | SMB |
+
+![Identified Open Ports Summary](./images/PCAP_Identified_Open_Ports_Summary.png)
+*Figure 5: SYN-ACK responses exposing ports 80, 135, 139 and 445.*
+
+**A.4 HTTP enumeration.** Requests to port 80 carry the header
+`User-Agent: Mozilla/5.0 (compatible; Nmap Scripting Engine; https://nmap.org/book/nse.html)`, identifying Nmap NSE.
+
+![HTTP Nmap NSE Enumeration](./images/PCAP_HTTP_Nmap_NSE_Enumeration.png)
+*Figure 6: Nmap Scripting Engine User-Agent in HTTP requests.*
+
+---
+
+### Stage B: SMB Access and Information Disclosure
+**ATT&CK:** T1078.003 Valid Accounts: Local Accounts, T1021.002 SMB/Windows Admin Shares, T1039 Data from Network Shared Drive
+
+**B.1 Authentication and share discovery.** The attacker authenticated over SMB2 (NTLMSSP) as **`WORKGROUP\root`** from workstation name `KALI`. A Tree Connect to `\\10.0.2.15\IPC$` was followed by a disconnect and a new connection to `\\10.0.2.15\Documents`, where wildcard queries listed the directory.
+
+![SMB Authentication and Tree Connect](./images/PCAP_SMB_Auth_TreeConnect_Enumeration.png)
+*Figure 7: NTLMSSP authentication, IPC$ tree connect/disconnect and connection to Documents.*
+
+**B.2 File read.** An SMB2 Read Request retrieved `information.txt` (150 bytes).
+
+![SMB Read File information.txt](./images/PCAP_SMB_Read_File_information_txt.png)
+*Figure 8: SMB2 read of `information.txt`.*
+
+Decoded content:
+
 > *"This server setup is under development. We are trying to link the web server with SMB. Please do not tamper with our work. Best regards, Dev Team"*
 
-This intelligence confirmed that files written to the `Documents` SMB share were directly mapped to the IIS web server's public directory.
+![Decoded Content of information.txt](./images/Evidence_Decoded_information_txt_Content.png)
+*Figure 9: Reconstructed plaintext of `information.txt`.*
 
-![Decoded Content of information.txt](/images/Evidence_Decoded_information_txt_Content.png)
-*Figure 2.3: Reconstructed plaintext content of information.txt confirming the SMB-to-IIS link.*
+The note indicates that the SMB share is linked to the web server, which the later HTTP request to `/Documents/shell.aspx` confirms.
 
----
-
-### Phase 3: Web Shell Deployment & Reverse Shell Execution
-**MITRE ATT&CK:** *Server Software Component: Web Shell (T1505.003), Command and Scripting Interpreter (T1059), Non-Standard Port (T1571)*
-
-#### Step 3.1: Uploading the Malicious ASPX Web Shell
-Capitalizing on the write permissions within `\\10.0.2.15\Documents`, the attacker issued an SMB2 `Create Request` to instantiate a new file named **`shell.aspx`**. At exactly `05:48:53 UTC` (frame `#3505`), the attacker transmitted an SMB2 `Write Request` containing the malicious ASP.NET code. To verify if this uploaded payload successfully executed and established a reverse shell, we will filter subsequent network traffic for packets occurring immediately after this upload phase (e.g., using the filter `frame.number > 3505`).
-
-![SMB Webshell Upload](/images/PCAP_SMB_Webshell_Upload_shell_aspx.png)
-*Figure 3.1: SMB2 Create and Write requests demonstrating the upload of shell.aspx at 05:48:53 UTC.*
-
-#### Step 3.2: Triggering RCE and Catching the Reverse Shell
-Applying the aforementioned filter, we observed that the attacker sent an HTTP request: `GET /Documents/shell.aspx HTTP/1.1`. The IIS server compiled the script, returned `HTTP/1.1 200 OK`, and immediately initiated an outbound TCP connection back to the attacker (`10.0.2.4`) on listening port **`4443`**.
-
-![HTTP Trigger and Reverse Shell on Port 4443](/images/PCAP_HTTP_Trigger_Reverse_Shell_Port4443.png)
-*Figure 3.2: HTTP GET request triggering the shell followed by a TCP reverse shell callback to port 4443.*
+> **Finding:** The origin of the `root` credential could not be determined from the evidence (see [Limitations](#9-limitations-and-open-questions)).
 
 ---
 
-### Phase 4: Memory Forensics & Host Persistence Analysis
-**MITRE ATT&CK:** *Boot or Logon Autostart Execution: Registry Run Keys / Startup Folder (T1547.001)*
+### Stage C: Web Shell Deployment and Reverse Shell
+**ATT&CK:** T1505.003 Server Software Component: Web Shell, T1059 Command and Scripting Interpreter, T1571 Non-Standard Port
 
-#### Step 4.1: Extracting Kernel Metadata & System Context
-To investigate host-level activities and post-exploitation artifacts, the memory image (`memdump.mem`) was analyzed using **Volatility 3**. Running the `windows.info` plugin established the operating system baseline, confirming a 64-bit Windows Server architecture with a Kernel Base Address of `0xf80079213000`.
+**C.1 Upload.** The attacker created `shell.aspx` in `\\10.0.2.15\Documents` (SMB2 Create) and sent the file content in an SMB2 Write Request at **05:48:53 UTC (frame #3505)**.
 
-![Volatility Kernel Base Info](/images/Volatility_Kernel_Base_System_Info.png)
-*Figure 4.1: Volatility 3 windows.info output displaying the Kernel Base address and OS details.*
+![SMB Webshell Upload](./images/PCAP_SMB_Webshell_Upload_shell_aspx.png)
+*Figure 10: SMB2 Create and Write of `shell.aspx`.*
 
-#### Step 4.2: Process Tree Correlation & Anomaly Detection
-Analyzing the memory image (`memdump.mem`) with Volatility 3 exposed the execution chain:
-*   **`w3wp.exe` (PID `4332`):** The legitimate IIS Worker Process. Because `shell.aspx` ran inside the IIS application pool, `w3wp.exe` handled the outbound reverse shell.
-*   **`updatenow.exe` (PID `900`):** At `06:08:23 UTC`—approximately 20 minutes after the `shell.aspx` payload was uploaded (`05:48:53 UTC`) and triggered—`w3wp.exe` spawned an unfamiliar child executable named `updatenow.exe`. An IIS worker process should never spawn standalone third-party binaries, confirming this executable was deliberately launched via the active web shell connection.
+**C.2 Trigger and callback.** Review of traffic after frame #3505 shows `GET /Documents/shell.aspx HTTP/1.1` answered with `HTTP/1.1 200 OK`, followed by an outbound TCP connection from `10.0.2.15` to `10.0.2.4` on port **4443**.
 
-![Volatility Process List](/images/Volatility_Process_Tree_w3wp_updatenow.png)
-*Figure 4.2: Volatility 3 windows.pslist output showing w3wp.exe spawning updatenow.exe at 06:08:23 UTC, correlating with the earlier web shell upload.*
+![HTTP Trigger and Reverse Shell on Port 4443](./images/PCAP_HTTP_Trigger_Reverse_Shell_Port4443.png)
+*Figure 11: Web shell request followed by the reverse connection to port 4443.*
 
-#### Step 4.3: Identifying the Persistence Mechanism
-Inspecting the command-line arguments of the anomalous child process revealed its exact on-disk location:
-`"C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\updatenow.exe"`
-By dropping `updatenow.exe` into the global `ProgramData` Startup directory, the attacker ensured the payload would automatically execute whenever any user logs into the server.
-
-![Volatility Command Line Persistence Path](/images/Volatility_Persistence_Startup_Path_PID900.png)
-*Figure 4.3: Volatility 3 output confirming updatenow.exe was planted inside the Windows Startup folder.*
+> **Analyst note:** The content of `shell.aspx` was ⟨not extracted / extracted via Export Objects > SMB and analyzed: describe findings⟩.
 
 ---
 
-### Phase 5: Malware Static Analysis & Threat Intelligence
-**MITRE ATT&CK:** *Obfuscated Files or Information: Software Packing (T1027.002), Application Layer Protocol (T1071)*
+### Stage D: Memory Forensics and Persistence
+**ATT&CK:** T1547.001 Boot or Logon Autostart Execution: Startup Folder, T1105 Ingress Tool Transfer *(suspected, delivery method unconfirmed)*
 
-#### Step 5.1: Static String Inspection & Packer Identification
-Running the `strings` utility against the recovered binary exposed modified PE section headers (`UPX0`, `UPX1`, `.rsrc`) alongside the version marker `3.91` and magic signature `UPX!`—confirming the binary was compressed using the **UPX (Ultimate Packer for eXecutables) v3.91** packer.
+**D.1 System baseline.** `windows.info` confirmed a 64-bit Windows Server image (Kernel Base `0xf80079213000`).
 
-![Malware UPX Packer Signatures](/images/Malware_Strings_UPX_Packer_Signature.png)
-*Figure 5.1: String extraction revealing UPX 3.91 packer headers.*
+![Volatility Kernel Base Info](./images/Volatility_Kernel_Base_System_Info.png)
+*Figure 12: `windows.info` output.*
 
-#### Step 5.2: Application Manifest & Stealth Execution Analysis
-The embedded XML Application Manifest within the `.rsrc` section is explicitly configured as `level="asInvoker"`. This ensures the binary executes silently using the caller's existing token without triggering a Windows User Account Control (UAC) elevation prompt.
+**D.2 Process lineage.** `windows.pslist` shows:
+- **`w3wp.exe` (PID 4332):** IIS worker process, the context in which an uploaded ASPX page executes.
+- **`updatenow.exe` (PID 900):** created at **06:08:23 UTC** with `w3wp.exe` as parent.
 
-![Malware XML Manifest Analysis](/images/Malware_Manifest_UAC_Bypass_Analysis.png)
-*Figure 5.2: Extracted XML Application Manifest highlighting the asInvoker execution level.*
+An IIS worker process does not normally launch standalone third-party executables. Together with the web shell activity, this indicates the binary was started through the web shell session.
 
-#### Step 5.3: PE Metadata & Malware Family Attribution
-Submitting the file hash to VirusTotal corroborated the static findings. The **Details** tab confirmed a 32-bit Windows executable packed with UPX 3.91 and wrapped with an AutoIt layer. 
+![Volatility Process List](./images/Volatility_Process_Tree_w3wp_updatenow.png)
+*Figure 13: `w3wp.exe` as parent of `updatenow.exe` (06:08:23 UTC).*
 
-![VirusTotal PE Metadata](/images/VT_Static_Analysis_PE_Metadata.png)
-*Figure 5.3: VirusTotal Details tab confirming UPX 3.91 packing, AutoIt library usage, and compilation timestamps.*
+**D.3 Persistence location.** The process command line shows:
+`C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\updatenow.exe`
+Executables in the All-Users Startup folder run at logon of any user, so this location establishes persistence. Execution after a reboot was not tested.
 
-On the **Detection** tab, the sample yielded a **57/71** malicious detection rate. Threat intelligence consensus attributes the sample to the **AgentTesla** malware family, a well-known info-stealer. 
-
-![VirusTotal Malware Family Detection](/images/VT_Detection_Malware_Family_AgentTesla.png)
-*Figure 5.4: VirusTotal Detection identifying the AgentTesla malware family.*
-
-#### Step 5.4: Command & Control (C2) Infrastructure Identification
-Dynamic sandbox telemetry revealed that the AgentTesla implant beacons out to the malicious external Command and Control (C2) server **`cp8nl.hyperhost.ua`**.
-
-![VirusTotal Contacted C2 Domains](/images/VT_Network_C2_Contacted_Domains.png)
-*Figure 5.5: VirusTotal Relations tab exposing the outbound C2 domain cp8nl.hyperhost.ua.*
+![Volatility Command Line Persistence Path](./images/Volatility_Persistence_Startup_Path_PID900.png)
+*Figure 14: Command line showing the Startup-folder path.*
 
 ---
 
-## 4. Reconstruction Timeline
+### Stage E: Malware Triage
+**ATT&CK:** T1027.002 Software Packing, T1071 Application Layer Protocol
 
-| Timestamp / Frame | Phase | Source / Process | Event Description |
-| :--- | :--- | :--- | :--- |
-| **PCAP `78.08s`** | Reconnaissance | `10.0.2.4` | Attacker launches a 1,076-packet TCP SYN port scan against `10.0.2.15`, discovering open ports `80, 135, 139, 445`. |
-| **PCAP `94.42s`** | Enumeration | `10.0.2.4` | Attacker runs Nmap Scripting Engine (NSE) HTTP probes against IIS on TCP port `80`. |
-| **PCAP `263.29s`** | Initial Access | `10.0.2.4` | Attacker authenticates to SMB2 as `WORKGROUP\root`, probes `IPC$`, and connects to `\\10.0.2.15\Documents`. |
-| **PCAP `273.86s`** | Collection | `10.0.2.4` | Attacker reads `information.txt` over SMB2, learning that the SMB share is linked to the IIS web server. |
-| **`05:48:53 UTC`** | Weaponization | `10.0.2.4` | Attacker uploads `shell.aspx` into `\\10.0.2.15\Documents` via SMB2. |
-| **PCAP `389.51s`** | Execution | `10.0.2.4` | Attacker sends `GET /Documents/shell.aspx HTTP/1.1` to trigger the web shell. |
-| **PCAP `401.49s`** | C2 | `w3wp.exe` | IIS worker process (`PID 4332`) establishes a reverse shell back to `10.0.2.4` on TCP port `4443`. |
-| **`06:08:23 UTC`** | Persistence | `w3wp.exe` | Web shell spawns `updatenow.exe` (`PID 900`) from the Startup folder (AgentTesla RAT). |
-| **`06:09:42 UTC`** | Response | `FTK Imager` | DFIR team initiates live memory acquisition (`memdump.mem`). |
+**E.1 Packer.** `strings` shows `UPX0`, `UPX1`, `.rsrc`, the `UPX!` signature and version `3.91`, so the binary is UPX-packed.
+
+![Malware UPX Packer Signatures](./images/Malware_Strings_UPX_Packer_Signature.png)
+*Figure 15: UPX 3.91 markers in `strings` output.*
+
+**E.2 Manifest.** The embedded manifest requests `level="asInvoker"`. The sample therefore does not request elevation and runs with the invoking token (here, the IIS worker identity) without a UAC prompt. This is not a UAC bypass.
+
+![Malware XML Manifest Analysis](./images/Malware_Manifest_UAC_Bypass_Analysis.png)
+*Figure 16: Embedded manifest with `asInvoker`.*
+
+**E.3 Static metadata and attribution.** VirusTotal details show a 32-bit PE packed with UPX 3.91 and an AutoIt component.
+
+![VirusTotal PE Metadata](./images/VT_Static_Analysis_PE_Metadata.png)
+*Figure 17: VirusTotal Details tab (UPX 3.91, AutoIt).*
+
+The sample is detected by **57/71** engines, and vendor labels attribute it to **AgentTesla**, a commodity information stealer and RAT. Attribution here rests on vendor consensus; no configuration extraction or local sandbox run was performed.
+
+![VirusTotal Malware Family Detection](./images/VT_Detection_Malware_Family_AgentTesla.png)
+*Figure 18: VirusTotal detections naming AgentTesla.*
+
+**E.4 Network indicator.** VirusTotal sandbox telemetry lists the contacted domain **`cp8nl.hyperhost.ua`**. AgentTesla variants commonly exfiltrate over SMTP, FTP or HTTP, so this domain may represent an exfiltration endpoint rather than a classic C2 server. It was not independently verified.
+
+![VirusTotal Contacted Domains](./images/VT_Network_C2_Contacted_Domains.png)
+*Figure 19: Domain contacted during sandbox execution.*
 
 ---
 
-## 5. Consolidated Indicators of Compromise (IoCs)
+## 4. Timeline
 
-| Indicator Type | Value | Context / Description |
+> All times in UTC. PCAP offsets are Wireshark relative times; UTC values for PCAP events are derived from the anchor point frame #3505 = 05:48:53 UTC (set *View > Time Display Format > UTC Date and Time of Day* to read them directly).
+
+| UTC | PCAP offset | Stage | Source | Event |
+| :--- | :--- | :--- | :--- | :--- |
+| ⟨derive⟩ | 78.08 s | Reconnaissance | `10.0.2.4` | TCP SYN scan (1,076 probes); open ports 80, 135, 139, 445 identified |
+| ⟨derive⟩ | 94.42 s | Reconnaissance | `10.0.2.4` | Nmap NSE HTTP enumeration against port 80 |
+| ⟨derive⟩ | 263.29 s | Initial access | `10.0.2.4` | SMB2 login as `WORKGROUP\root`; IPC$ probe; connect to `Documents` |
+| ⟨derive⟩ | 273.86 s | Collection | `10.0.2.4` | `information.txt` read over SMB2 |
+| **05:48:53** | ⟨frame #3505 offset⟩ | Weaponization | `10.0.2.4` | `shell.aspx` written to `\\10.0.2.15\Documents` |
+| ⟨derive⟩ | 389.51 s | Execution | `10.0.2.4` | `GET /Documents/shell.aspx` |
+| ⟨derive⟩ | 401.49 s | Command and control | `10.0.2.15` | Outbound connection to `10.0.2.4:4443` |
+| **06:08:23** | n/a (outside PCAP) | Persistence | `w3wp.exe` (PID 4332) | `updatenow.exe` (PID 900) started from the Startup folder |
+| **06:09:42** | n/a | Response | FTK Imager | Memory acquisition (`memdump.mem`) |
+
+---
+
+## 5. MITRE ATT&CK Mapping
+
+| Tactic | Technique | Evidence |
 | :--- | :--- | :--- |
-| **IPv4 Address** | `10.0.2.4` | Threat actor origin IP (Port scanning, SMB exploitation, Reverse shell listener) |
-| **IPv4 Address** | `10.0.2.15` | Compromised IIS Web Server |
-| **FQDN / Domain** | `cp8nl.hyperhost.ua` | External Command & Control (C2) server for AgentTesla implant |
-| **SHA-256 Hash** | `c25a6673a24d169de1bb399d226c12cdc666e0fa534149fc9fa7896ee61d406f` | Packed `updatenow.exe` binary (AgentTesla / AutoIt / UPX 3.91) |
-| **File Path**| `\Documents\shell.aspx` | Malicious ASP.NET web shell uploaded via SMB |
-| **File Path** | `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\updatenow.exe` | Persistence binary planted in All-Users Startup folder |
-| **TCP Ports** | `4443` (Outbound C2), `445` (SMB), `80` (HTTP) | Ports leveraged for exploitation and reverse shell callback |
+| Reconnaissance | T1595 Active Scanning | 1,076 SYN probes; Nmap NSE User-Agent |
+| Discovery | T1046 Network Service Discovery | Open-port enumeration; share listing |
+| Initial Access / Lateral Movement | T1078.003 Valid Accounts: Local Accounts | SMB login as `WORKGROUP\root` |
+| Lateral Movement | T1021.002 SMB/Windows Admin Shares | IPC$ and Documents tree connects |
+| Collection | T1039 Data from Network Shared Drive | Read of `information.txt` |
+| Persistence | T1505.003 Web Shell | `shell.aspx` in IIS-served directory |
+| Execution | T1059 Command and Scripting Interpreter | Shell session through `w3wp.exe` |
+| Command and Control | T1571 Non-Standard Port | Reverse connection on TCP/4443 |
+| Command and Control | T1105 Ingress Tool Transfer *(suspected)* | `updatenow.exe` on host, transfer method unconfirmed |
+| Persistence | T1547.001 Startup Folder | `updatenow.exe` in All-Users Startup |
+| Defense Evasion | T1027.002 Software Packing | UPX 3.91 |
 
 ---
 
-## 6. Remediation & Hardening Recommendations
+## 6. Indicators of Compromise
 
-### Immediate Containment & Eradication
-1.  **Network Isolation:** Immediately quarantine host `10.0.2.15` from the internal network and block all inbound/outbound traffic to `10.0.2.4` at the perimeter firewall.
-2.  **DNS & Egress Sinkholing:** Block DNS resolution and outbound traffic to `cp8nl.hyperhost.ua` across enterprise DNS resolvers and firewalls. Block unauthorized outbound connections on TCP port `4443`.
-3.  **Process Termination & Artifact Removal:**
-    *   Terminate the malicious process `updatenow.exe` (`PID 900`) and recycle/stop the compromised IIS Application Pool (`w3wp.exe`, `PID 4332`).
-    *   Delete `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\updatenow.exe` and remove `shell.aspx` from the `Documents` directory.
-4.  **Credential Rotation:** Because AgentTesla is capable of harvesting local credentials, immediately disable or rotate the password for the `root` account and all local/domain accounts present on `10.0.2.15`.
+| Type | Value | Source | Notes |
+| :--- | :--- | :--- | :--- |
+| IPv4 | `10.0.2.4` | PCAP | Attacker host (scan, SMB, reverse shell listener) |
+| IPv4 | `10.0.2.15` | PCAP / Memory | Victim IIS server |
+| Domain | `cp8nl.hyperhost.ua` | VirusTotal sandbox | Contacted by sample; role unverified |
+| SHA-256 | `c25a6673a24d169de1bb399d226c12cdc666e0fa534149fc9fa7896ee61d406f` | Sample | `updatenow.exe` (UPX / AutoIt / AgentTesla per vendors) |
+| File path | `\Documents\shell.aspx` | PCAP | Uploaded web shell |
+| File path | `C:\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\updatenow.exe` | Memory | Persistence location |
+| Account | `WORKGROUP\root` | PCAP | Account used for SMB access |
+| Port | TCP/4443 | PCAP | Reverse shell callback |
+| User-Agent | `Mozilla/5.0 (compatible; Nmap Scripting Engine; https://nmap.org/book/nse.html)` | PCAP | Nmap NSE |
+| Process | `w3wp.exe` PID 4332 to `updatenow.exe` PID 900 | Memory | Anomalous parent/child |
 
-### Long-Term Architectural Hardening
-1.  **Decouple SMB Shares from IIS Web Directories:** Never map writable SMB file shares directly to IIS Virtual Directories or webroots. Enforce strict **Read-Only** permissions for network users and disable script execution (`Execute Permissions: None`) on upload directories within IIS Manager.
-2.  **Restrict SMB Exposure:** Disable SMB (`TCP 445` and `139`) on public-facing interfaces. Restrict administrative share access strictly to dedicated management jump hosts over VPN/Zero-Trust segmentation.
-3.  **Endpoint Detection & Attack Surface Reduction (ASR):** Deploy an EDR agent configured to alert on and block web server worker processes (`w3wp.exe`) from spawning child command interpreters or unsigned binaries from user-writable directories.
+---
+
+## 7. Detection Engineering
+
+Sigma rules written from the observed behavior. Field names follow Sigma conventions and should be validated against the target backend before deployment.
+
+**Rule 1: IIS worker process spawning child processes**
+```yaml
+title: IIS Worker Process Spawning Suspicious Child Process
+status: experimental
+description: Detects w3wp.exe launching shells or non-IIS executables, typical of web shell activity.
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    ParentImage|endswith: '\w3wp.exe'
+  filter_legit:
+    Image|endswith:
+      - '\conhost.exe'
+      - '\csc.exe'
+      - '\cvtres.exe'
+  condition: selection and not filter_legit
+falsepositives:
+  - Legitimate applications that spawn helper processes (tune per environment)
+level: high
+tags:
+  - attack.persistence
+  - attack.t1505.003
+  - attack.execution
+  - attack.t1059
+```
+
+**Rule 2: Executable created in the All-Users Startup folder**
+```yaml
+title: Executable Written to All-Users Startup Folder
+status: experimental
+description: Detects creation of executable files in the global Startup folder.
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection:
+    TargetFilename|contains: '\ProgramData\Microsoft\Windows\Start Menu\Programs\Startup\'
+    TargetFilename|endswith:
+      - '.exe'
+      - '.dll'
+      - '.bat'
+      - '.ps1'
+      - '.vbs'
+  condition: selection
+falsepositives:
+  - Software installers placing shortcuts or helpers (review the writing process)
+level: high
+tags:
+  - attack.persistence
+  - attack.t1547.001
+```
+
+**Rule 3: Script file created in a web-served directory**
+```yaml
+title: ASPX File Created in Web Directory
+status: experimental
+description: Detects creation of .aspx/.asmx files in IIS content paths, including writes made over SMB (written by the System process).
+logsource:
+  category: file_event
+  product: windows
+detection:
+  selection:
+    TargetFilename|endswith:
+      - '.aspx'
+      - '.asmx'
+      - '.ashx'
+    TargetFilename|contains:
+      - '\inetpub\'
+      - '\Documents\'   # adjust to the actual shared/web path
+  condition: selection
+falsepositives:
+  - Planned web application deployments
+level: high
+tags:
+  - attack.persistence
+  - attack.t1505.003
+```
+
+**Rule 4: Nmap NSE against web server**
+```yaml
+title: Nmap Scripting Engine User-Agent in Web Requests
+status: experimental
+description: Detects Nmap NSE enumeration via its default User-Agent.
+logsource:
+  category: webserver
+detection:
+  selection:
+    cs-user-agent|contains: 'Nmap Scripting Engine'
+  condition: selection
+falsepositives:
+  - Authorized vulnerability scanning
+level: medium
+tags:
+  - attack.reconnaissance
+  - attack.t1595
+```
+
+### Detection Coverage by Stage
+
+| Stage | Earliest detection opportunity |
+| :--- | :--- |
+| Scan | Many SYNs from one source to many ports (IDS/firewall threshold); Rule 4 for NSE |
+| SMB access | Successful SMB logon (Event ID 4624, logon type 3) by `root` from an unusual host |
+| Web shell upload | Rule 3 |
+| Web shell execution | Rule 1; outbound connection from `w3wp.exe` to an uncommon port |
+| Persistence | Rule 2 |
+
+---
+
+## 8. Recommendations
+
+### Containment and Eradication
+1. **Isolate** `10.0.2.15` and block `10.0.2.4` at the perimeter.
+2. **Block** `cp8nl.hyperhost.ua` at DNS and egress, and block outbound TCP/4443.
+3. **Remove artifacts:** stop `updatenow.exe` (PID 900), recycle the affected application pool, delete the Startup-folder binary and `shell.aspx`. Preserve copies for evidence first.
+4. **Rotate credentials** for `root` and all accounts present on the host, since information stealers harvest stored credentials.
+5. **Review** the server for additional web shells and scheduled tasks or services created during the intrusion window.
+
+### Hardening
+1. **Separate SMB shares from web roots.** Do not map writable shares into IIS content paths; set script execution to *None* on upload directories.
+2. **Restrict SMB.** Block TCP 139/445 from untrusted networks; limit administrative access to management hosts.
+3. **Credential hygiene.** Disallow a generic `root` account on Windows servers; enforce strong passwords and lockout, and alert on repeated logon failures.
+4. **Endpoint controls.** Use EDR or ASR rules to block `w3wp.exe` from spawning interpreters and unsigned binaries.
+5. **Logging.** Enable process creation (4688 or Sysmon 1), file creation (Sysmon 11), SMB and IIS logs, and forward them centrally.
+
+---
+
+## 9. Limitations and Open Questions
+
+- **Credential source:** ⟨No brute-force activity observed in the PCAP / observed N failed logons (STATUS_LOGON_FAILURE)⟩; how `root` credentials were obtained is undetermined.
+- **Payload delivery:** how `updatenow.exe` reached the host is not confirmed by the evidence. ⟨Update if found.⟩
+- **Time gap:** about 19 minutes separate the web shell trigger and the start of `updatenow.exe`. This is consistent with manual operator activity through the shell, but the capture does not cover that interval.
+- **Attribution:** AgentTesla attribution comes from vendor labels only; no config extraction or local dynamic analysis was done.
+- **Network indicator:** the contacted domain is from third-party sandbox data and its role is unverified.
+- **Web shell content:** ⟨state whether `shell.aspx` was analyzed⟩.
+- **Scope:** no evidence reviewed for lateral movement or further data theft beyond `information.txt`.
+
+---
+
+## 10. Lessons Learned
+
+- A single misconfiguration (writable share mapped to an executable web path) converted file-share access into remote code execution.
+- Process lineage was the most reliable host indicator: a web server worker process launching an executable stands out immediately.
+- Separating observed facts from inferences (attribution, C2 role, delivery method) keeps conclusions defensible.
+
+---
+
+## Repository Structure
+
+```
+.
+├── README.md
+├── images/               # Figures referenced in this report
+├── detections/           # Sigma rules (rule files)
+└── evidence-hashes.txt   # SHA-256 of pcap / memdump / sample
+```
