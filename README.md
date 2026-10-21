@@ -33,6 +33,13 @@ Executing the web shell via an HTTP GET request established an interactive rever
 
 ## 2. Scope & Forensic Artifacts
 
+### Network Environment Overview
+The network topology involved in this incident consists of the external attacker node, the public-facing IIS Web Server, and the outbound Command and Control (C2) infrastructure. 
+
+![Network Topology Overview](/images/Network_Topology_Overview.png)
+*Figure 2.1: Network topology diagram illustrating the attacker origin (10.0.2.4), the compromised IIS server (10.0.2.15), and the external C2 domain.*
+
+### Evidentiary Artifacts
 The investigation analyzed the following evidentiary artifacts collected during incident triage:
 
 *   **Network Capture (`capture.pcapng`):** Full packet capture recording the initial reconnaissance, lateral share enumeration, payload staging, and reverse shell traffic.
