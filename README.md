@@ -417,12 +417,3 @@ tags:
 
 ---
 
-## Repository Structure
-
-```
-.
-├── README.md
-├── images/               # Figures referenced in this report
-├── detections/           # Sigma rules (rule files)
-└── evidence-hashes.txt   # SHA-256 of pcap / memdump / sample
-```
