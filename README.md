@@ -63,8 +63,8 @@ Requesting the web shell over HTTP was followed by an outbound TCP connection fr
 
 | Artifact | Description | Integrity |
 | :--- | :--- | :--- |
-| `capture.pcapng` | Packet capture covering scan, SMB activity, web shell trigger and reverse shell | SHA-256: ⟨`sha256sum capture.pcapng`⟩ |
-| `memdump.mem` | Physical memory image acquired with FTK Imager (PID 3628) at `2024-09-10 06:09:42 UTC` | SHA-256: ⟨`sha256sum memdump.mem`⟩ |
+| `capture.pcapng` | Packet capture covering scan, SMB activity, web shell trigger and reverse shell | SHA-256: `[Insert actual SHA-256 hash here]` |
+| `memdump.mem` | Physical memory image acquired with FTK Imager (PID 3628) at `2024-09-10 06:09:42 UTC` | SHA-256: `[Insert actual SHA-256 hash here]` |
 | `updatenow.exe` | PE32 recovered from the All-Users Startup folder | SHA-256: `c25a6673a24d169de1bb399d226c12cdc666e0fa534149fc9fa7896ee61d406f` |
 
 ### Methodology
