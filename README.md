@@ -154,7 +154,7 @@ The note indicates that the SMB share is linked to the web server, which the lat
 ![HTTP Trigger and Reverse Shell on Port 4443](./images/PCAP_HTTP_Trigger_Reverse_Shell_Port4443.png)
 *Figure 11: Web shell request followed by the reverse connection to port 4443.*
 
-> **Analyst note:** The content of `shell.aspx` was ⟨not extracted / extracted via Export Objects > SMB and analyzed: describe findings⟩.
+> **Analyst note:** The content of `shell.aspx` was not dynamically analyzed within the scope of this network triage.
 
 ---
 
