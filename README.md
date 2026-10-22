@@ -221,13 +221,13 @@ The sample is detected by **57/71** engines, and vendor labels attribute it to *
 
 | UTC | PCAP offset | Stage | Source | Event |
 | :--- | :--- | :--- | :--- | :--- |
-| ⟨derive⟩ | 78.08 s | Reconnaissance | `10.0.2.4` | TCP SYN scan (1,076 probes); open ports 80, 135, 139, 445 identified |
-| ⟨derive⟩ | 94.42 s | Reconnaissance | `10.0.2.4` | Nmap NSE HTTP enumeration against port 80 |
-| ⟨derive⟩ | 263.29 s | Initial access | `10.0.2.4` | SMB2 login as `WORKGROUP\root`; IPC$ probe; connect to `Documents` |
-| ⟨derive⟩ | 273.86 s | Collection | `10.0.2.4` | `information.txt` read over SMB2 |
-| **05:48:53** | ⟨frame #3505 offset⟩ | Weaponization | `10.0.2.4` | `shell.aspx` written to `\\10.0.2.15\Documents` |
-| ⟨derive⟩ | 389.51 s | Execution | `10.0.2.4` | `GET /Documents/shell.aspx` |
-| ⟨derive⟩ | 401.49 s | Command and control | `10.0.2.15` | Outbound connection to `10.0.2.4:4443` |
+| **05:44:28** | 78.08 s | Reconnaissance | `10.0.2.4` | TCP SYN scan (1,076 probes); open ports 80, 135, 139, 445 identified |
+| **05:44:45** | 94.42 s | Reconnaissance | `10.0.2.4` | Nmap NSE HTTP enumeration against port 80 |
+| **05:47:34** | 263.29 s | Initial access | `10.0.2.4` | SMB2 login as `WORKGROUP\root`; IPC$ probe; connect to `Documents` |
+| **05:47:44** | 273.86 s | Collection | `10.0.2.4` | `information.txt` read over SMB2 |
+| **05:48:53** | 342.61 s | Weaponization | `10.0.2.4` | `shell.aspx` written to `\\10.0.2.15\Documents` |
+| **05:49:40** | 389.51 s | Execution | `10.0.2.4` | `GET /Documents/shell.aspx` |
+| **05:49:52** | 401.49 s | Command and control | `10.0.2.15` | Outbound connection to `10.0.2.4:4443` |
 | **06:08:23** | n/a (outside PCAP) | Persistence | `w3wp.exe` (PID 4332) | `updatenow.exe` (PID 900) started from the Startup folder |
 | **06:09:42** | n/a | Response | FTK Imager | Memory acquisition (`memdump.mem`) |
 
