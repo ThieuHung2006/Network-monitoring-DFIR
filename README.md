@@ -401,15 +401,13 @@ tags:
 
 ## 9. Limitations and Open Questions
 
-- **Credential source:** ⟨No brute-force activity observed in the PCAP / observed N failed logons (STATUS_LOGON_FAILURE)⟩; how `root` credentials were obtained is undetermined.
-- **Payload delivery:** how `updatenow.exe` reached the host is not confirmed by the evidence. ⟨Update if found.⟩
-- **Time gap:** about 19 minutes separate the web shell trigger and the start of `updatenow.exe`. This is consistent with manual operator activity through the shell, but the capture does not cover that interval.
+- **Credential source:** No brute-force activity was observed in the PCAP, leaving the origin of the compromised `root` credential undetermined.
+- **Payload delivery:** How `updatenow.exe` reached the host is not confirmed by the evidence.
+- **Time gap:** About 19 minutes separate the web shell trigger and the start of `updatenow.exe`. This is consistent with manual operator activity through the shell, but the capture does not cover that interval.
 - **Attribution:** AgentTesla attribution comes from vendor labels only; no config extraction or local dynamic analysis was done.
-- **Network indicator:** the contacted domain is from third-party sandbox data and its role is unverified.
-- **Web shell content:** ⟨state whether `shell.aspx` was analyzed⟩.
-- **Scope:** no evidence reviewed for lateral movement or further data theft beyond `information.txt`.
-
----
+- **Network indicator:** The contacted domain is from third-party sandbox data and its role is unverified.
+- **Web shell content:** The content of `shell.aspx` was not dynamically analyzed within the scope of this network triage.
+- **Scope:** No evidence was reviewed for lateral movement or further data theft beyond `information.txt`.
 
 ## 10. Lessons Learned
 
