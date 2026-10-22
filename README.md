@@ -7,14 +7,13 @@
 | | |
 | :--- | :--- |
 | **Project type** | Independent lab: simulated incident reconstructed from a public case and investigated end to end |
-| **Based on** | ⟨Name / link of the original case, e.g. CyberDefenders challenge or write-up⟩ |
-| **Analyst** | ⟨Your name⟩ |
-| **Lab environment** | ⟨e.g. VirtualBox NAT network: Kali Linux attacker (`10.0.2.4`), Windows Server + IIS victim (`10.0.2.15`)⟩ |
-| **Tools** | Wireshark, Volatility 3, `strings`, VirusTotal, Sigma |
+| **Based on** | CyberDefenders Lockdown Challenge |
+| **Analyst** | Thieu Dinh Hung |
+| **Lab environment** | Virtual network: Kali Linux attacker (`10.0.2.4`), Windows Server + IIS victim (`10.0.2.15`) |
+| **Tools** | Wireshark, Volatility 3, `strings`, VirusTotal |
 | **Evidence** | `capture.pcapng`, `memdump.mem`, `updatenow.exe` |
 
 > **Disclaimer:** All hosts, accounts and IP addresses in this report belong to an isolated lab environment. No real organization or production system was involved.
-
 ---
 
 ## TL;DR
