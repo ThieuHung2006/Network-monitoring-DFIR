@@ -56,7 +56,7 @@ Requesting the web shell over HTTP was followed by an outbound TCP connection fr
 
 ### Network Environment
 
-![Network Topology Overview](./images/topology.png)
+![Network Topology Overview](./images/topology.jpg)
 *Figure 1: Lab topology: attacker (10.0.2.4), IIS server (10.0.2.15) and external domain contacted by the malware.*
 
 ### Evidence Artifacts
